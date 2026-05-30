@@ -126,6 +126,7 @@ spotipy==2.23.0
 kaggle==1.6.12
 jupyter==1.0.0
 tqdm==4.66.4
+seaborn>=0.13.2
 ```
 
 Then install:
@@ -302,13 +303,13 @@ print(f"Clean dataset: {len(df_clean)} tracks")
 
 ### 3.3 EDA Checklist Before Moving On
 
-- [ ] You know the shape of the dataset (rows, columns)
-- [ ] You understand what each audio feature means
-- [ ] Missing values handled
-- [ ] Duplicates removed
-- [ ] Distribution plots generated and studied
-- [ ] Correlation matrix analyzed
-- [ ] Clean CSV saved to `data/processed/`
+- [x] You know the shape of the dataset (rows, columns)
+- [x] You understand what each audio feature means
+- [x] Missing values handled
+- [x] Duplicates removed
+- [x] Distribution plots generated and studied
+- [x] Correlation matrix analyzed
+- [x] Clean CSV saved to `data/processed/`
 
 ---
 
