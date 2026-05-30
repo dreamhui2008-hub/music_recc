@@ -367,9 +367,12 @@ df['speechiness_log'] = np.log1p(df['speechiness'])
 
 Plot the before/after:
 ```python
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-df['instrumentalness'].hist(bins=50, ax=axes[0], title='Before')
-df['instrumentalness_log'].hist(bins=50, ax=axes[1], title='After log1p')
+fig, axes = plt.subplots(1,2, figsize=(12, 4))
+df['instrumentalness'].hist(bins=50, ax=axes[0])
+axes[0].set_title('Before')
+
+df['instrumentalness_log'].hist(bins=50, ax=axes[1])
+axes[1].set_title('After log1p')
 plt.show()
 ```
 
