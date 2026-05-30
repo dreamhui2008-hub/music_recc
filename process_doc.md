@@ -139,9 +139,17 @@ pip install -r requirements.txt
 ### 2.4 Set Up Kaggle API
 
 1. Go to https://www.kaggle.com → Account → API → Create New Token
-2. This downloads a `kaggle.json` file
-3. Place it at `~/.kaggle/kaggle.json` (Mac/Linux) or `C:\Users\<you>\.kaggle\kaggle.json` (Windows)
-4. Run `chmod 600 ~/.kaggle/kaggle.json` on Mac/Linux
+2. Save the API via CLI with
+        mkdir -p ~/.kaggle
+        echo '{"username":"your_username","key":"your_api_key"}' > ~/.kaggle/kaggle.json
+        chmod 600 ~/.kaggle/kaggle.json
+3. Run `type $env:USERPROFILE\.kaggle\kaggle.json` to confirm it has been created under your local Kaggle folder
+3. Make sure that the encoding is UTF-8, if it is not, do the following:
+        `notepad $env:USERPROFILE\.kaggle\kaggle.json` on CLI
+        In Notepad, click File → Save As
+        At the bottom, change Encoding to UTF-8
+        Save it as `kaggle.json`
+        Replace the existing file
 
 ---
 
@@ -155,7 +163,7 @@ The primary dataset is the Spotify Tracks Dataset on Kaggle (~600k tracks):
 
 ```bash
 kaggle datasets download -d maharshipandya/-spotify-tracks-dataset
-unzip -d data/raw/ spotify-tracks-dataset.zip
+python -m zipfile -e .\-spotify-tracks-dataset.zip .\data\raw
 ```
 
 Dataset page: https://www.kaggle.com/datasets/maharshipandya/-spotify-tracks-dataset

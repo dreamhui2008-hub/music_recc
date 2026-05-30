@@ -1,0 +1,12 @@
+pandas>=2.3
+numpy>=1.26
+scikit-learn>=1.6
+matplotlib>=3.10
+plotly>=6.0
+sentence-transformers>=5.0
+streamlit>=1.45
+spotipy>=2.25
+tqdm>=4.67
+faiss-cpu==1.13.2 #faiss-gpu only available to CUDA-compatible GPU
+kaggle==1.6.12
+jupyter==1.0.0
