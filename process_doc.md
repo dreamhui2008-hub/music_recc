@@ -460,16 +460,16 @@ fig = px.scatter(
 fig.show()
 ```
 
-**What to look for:** Do genres cluster? Does pop occupy a different region than classical? This validates that your feature engineering is capturing meaningful structure.
+**What to look for:** Do genres cluster? Does pop occupy a different region than classical? Visible clustering suggests that the engineered audio features capture meaningful musical structure and may be useful for downstream tasks such as genre classification or recommendation.
 
 ### 4.3 Phase 2 Checklist
 
-- [ ] Skewed features log-transformed
-- [ ] All features z-score normalized
-- [ ] Scaler saved as `scaler.pkl`
-- [ ] Genre label-encoded and encoder saved
-- [ ] `audio_matrix.npy` saved with shape `(N, 10)`
-- [ ] PCA plot confirms genre clustering
+- [x] Skewed features log-transformed
+- [x] All features z-score normalized
+- [x] Scaler saved as `scaler.pkl`
+- [x] Genre label-encoded and encoder saved
+- [x] `audio_matrix.npy` saved with shape `(N, 10)`
+- [x] PCA plot confirms genre clustering
 
 ---
 
@@ -592,12 +592,12 @@ print(f"Hybrid matrix shape: {hybrid_matrix.shape}")  # Should be (N, 394)
 
 ### 5.3 Phase 3 Checklist
 
-- [ ] `all-MiniLM-L6-v2` loaded and tested
-- [ ] Text descriptions built per track
-- [ ] All tracks encoded (this takes time — be patient)
-- [ ] `text_matrix.npy` saved with shape `(N, 384)`
-- [ ] `hybrid_matrix.npy` saved with shape `(N, 394)`
-- [ ] Both matrices are L2-normalized
+- [x] `all-MiniLM-L6-v2` loaded and tested
+- [x] Text descriptions built per track
+- [x] All tracks encoded (this takes time — be patient)
+- [x] `text_matrix.npy` saved with shape `(N, 384)`
+- [x] `hybrid_matrix.npy` saved with shape `(N, 394)`
+- [x] Both matrices are L2-normalized
 
 ---
 
