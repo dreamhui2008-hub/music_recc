@@ -707,11 +707,11 @@ Target: <10ms per query. If it's slower, reduce `efSearch`.
 
 ### 6.3 Phase 4 Checklist
 
-- [ ] `hybrid_matrix.npy` loaded as float32
-- [ ] `IndexHNSWFlat` built and populated
-- [ ] Spot-check query returns sensible results
-- [ ] Query speed benchmarked and within target
-- [ ] Index saved to `index/faiss.index`
+- [x] `hybrid_matrix.npy` loaded as float32
+- [x] `IndexHNSWFlat` built and populated
+- [x] Spot-check query returns sensible results
+- [x] Query speed benchmarked and within target
+- [x] Index saved to `index/faiss.index`
 
 ---
 
