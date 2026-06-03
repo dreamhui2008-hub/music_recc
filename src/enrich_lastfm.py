@@ -20,7 +20,7 @@ def get_lastfm_tags(track_name, artist, api_key):
     try:
         r = requests.get(url, params=params, timeout=5)
         data = r.json()
-        tags = data.get('toptags', {}).get('tag', [])
+        tags = data.get('toptags', {}).get('tag', []) # Not all tracks may have 'toptags' or 'tag' so using placeholders with {} and []. get() allows you to have a placeholder argument vs using [''] indexing directly
         return [t['name'].lower() for t in tags[:10]]
     except Exception:
         return []

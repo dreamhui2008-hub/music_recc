@@ -1255,25 +1255,29 @@ python src/enrich_lastfm.py
 
 This script adds a `language` column (language of lyrics) by querying the MusicBrainz recording API. No API key required, but a User-Agent header with a real contact email is mandatory — MusicBrainz will block requests without it.
 
-Because this script runs at 1 req/sec and only targets tracks that already have a language-relevant Last.fm tag (typically 10–15% of the dataset, ~17–25 hours), it must be run on a persistent server rather than your local machine. **Use Oracle Cloud's free tier VM** so the script runs unattended without any session timeout.
+Because this script runs at 1 req/sec and only targets tracks that already have a language-relevant Last.fm tag (typically 10–15% of the dataset, ~17–25 hours), it must be run on a persistent server rather than your local machine. **Use Google Cloud's free e2-micro VM** so the script runs unattended without any session timeout.
 
 ---
 
-#### Step 1 — Set Up Oracle Cloud Free VM
+#### Step 1 — Set Up Google Cloud Free VM
 
-1. Go to https://www.oracle.com/cloud/free/ and create a free account
-2. Once logged in, go to **Compute → Instances → Create Instance**
-3. Leave defaults (Oracle Linux, 1 OCPU, 1GB RAM — all free tier)
-4. Download the SSH key pair when prompted — save the `.key` file somewhere safe
-5. Once the instance is running, copy its **Public IP address**
+1. Go to https://cloud.google.com/free and create an account — requires a credit card for identity verification but the e2-micro is permanently free and will not charge you
+2. Once logged in, go to **Compute Engine → VM Instances → Create Instance**
+3. Configure the instance:
+   - **Region:** us-west1, us-central1, or us-east1 (only these three qualify for permanent free tier)
+   - **Machine type:** e2-micro (under "General purpose → E2")
+   - **Boot disk:** Debian GNU/Linux (default) — leave everything else as default
+4. Under **Firewall**, check both "Allow HTTP traffic" and "Allow HTTPS traffic"
+5. Click **Create** and wait ~30 seconds for the instance to start
+6. Copy the **External IP** from the instance list
 
 SSH into it from your local terminal:
 
 ```bash
-ssh -i /path/to/your.key opc@YOUR_ORACLE_IP
+ssh -i /path/to/your.key YOUR_USERNAME@YOUR_GCP_IP
 ```
 
-On Windows use PowerShell or install PuTTY.
+> **Easier option:** GCP has a browser-based SSH button directly in the console — click the **SSH** button next to your instance name and it opens a terminal in your browser. No key management needed. Use this if the SSH key setup is giving you trouble.
 
 ---
 
@@ -1282,40 +1286,37 @@ On Windows use PowerShell or install PuTTY.
 Once inside the VM, install Python dependencies:
 
 ```bash
-sudo yum install python3 python3-pip -y
+sudo apt-get update
+sudo apt-get install python3 python3-pip tmux -y
 pip3 install requests pandas tqdm
 ```
 
-Create the working directory and upload your enriched CSV:
+Create the working directory:
 
 ```bash
 mkdir -p ~/music_recc/data/processed
 mkdir -p ~/music_recc/src
 ```
 
-From your **local machine**, copy the file to the VM:
+From your **local machine**, copy the enriched CSV to the VM:
 
 ```bash
-scp -i /path/to/your.key data/processed/tracks_enriched.csv opc@YOUR_ORACLE_IP:~/music_recc/data/processed/
+scp -i /path/to/your.key data/processed/tracks_enriched.csv YOUR_USERNAME@YOUR_GCP_IP:~/music_recc/data/processed/
 ```
 
 Then copy the script:
 
 ```bash
-scp -i /path/to/your.key src/enrich_musicbrainz.py opc@YOUR_ORACLE_IP:~/music_recc/src/
+scp -i /path/to/your.key src/enrich_musicbrainz.py YOUR_USERNAME@YOUR_GCP_IP:~/music_recc/src/
 ```
+
+> **If you used the browser SSH button:** Use the upload file option in the browser terminal instead of `scp` — there's an upload button in the top bar of the GCP browser terminal.
 
 ---
 
-#### Step 3 — Install `tmux`
+#### Step 3 — tmux Reference
 
-`tmux` keeps the script running after you disconnect from SSH. Without it, closing your terminal kills the script.
-
-```bash
-sudo yum install tmux -y
-```
-
-Basic `tmux` commands you need to know:
+`tmux` keeps the script running after you disconnect from SSH. It's already installed from Step 2.
 
 | Command | What It Does |
 |---|---|
@@ -1406,7 +1407,7 @@ if __name__ == "__main__":
         if count % 5000 == 0 and count > 0:
             df.to_csv(CHECKPOINT_PATH, index=False)
 
-            # Write to log file — also signals Oracle VM is active, not idle
+            # Write to log file — also signals GCP VM is active, not idle
             with open(LOG_PATH, 'a') as f:
                 f.write(f"Row {i} | count {count} / {len(needs_language)} done\n")
 
@@ -1420,10 +1421,9 @@ if __name__ == "__main__":
 
 #### Step 5 — Run It Inside tmux
 
-SSH into the VM, navigate to the project directory, and start a tmux session:
+SSH into the VM (or open browser SSH), navigate to the project directory, and start a tmux session:
 
 ```bash
-ssh -i /path/to/your.key opc@YOUR_ORACLE_IP
 cd ~/music_recc
 tmux new -s enrichment
 python3 src/enrich_musicbrainz.py
@@ -1435,10 +1435,10 @@ Once it's running and you've confirmed the first few rows are processing, detach
 Ctrl+B then D
 ```
 
-You can now close your laptop. The script runs on Oracle's servers. Check back anytime:
+You can now close your laptop. The script runs on GCP's servers. Check back anytime:
 
 ```bash
-ssh -i /path/to/your.key opc@YOUR_ORACLE_IP
+ssh -i /path/to/your.key YOUR_USERNAME@YOUR_GCP_IP
 tmux attach -t enrichment
 ```
 
@@ -1449,14 +1449,18 @@ tmux attach -t enrichment
 Once the script completes, copy the enriched CSV back to your local machine:
 
 ```bash
-scp -i /path/to/your.key opc@YOUR_ORACLE_IP:~/music_recc/data/processed/tracks_enriched.csv data/processed/tracks_enriched.csv
+scp -i /path/to/your.key YOUR_USERNAME@YOUR_GCP_IP:~/music_recc/data/processed/tracks_enriched.csv data/processed/tracks_enriched.csv
 ```
+
+> **If you used browser SSH:** Use the download file option in the browser terminal top bar instead of `scp`.
 
 Then continue with **9.4 Enrichment Validation** locally as normal.
 
 ---
 
-> **If the VM gets reclaimed mid-run:** Oracle rarely reclaims actively running VMs, but if it happens, the checkpoint file has your progress. Re-upload `tracks_enriched_checkpoint.csv` as `tracks_enriched.csv`, spin up a new VM, and re-run the script — it automatically skips rows where `language` is already populated.
+> **If the VM goes down mid-run:** GCP free tier VMs are stable and don't get reclaimed the way Oracle sometimes does. But if anything happens, the checkpoint file has your progress. Re-upload `tracks_enriched_checkpoint.csv` as `tracks_enriched.csv` and re-run the script — it automatically skips rows where `language` is already populated.
+
+> **Reminder: stop the VM when done.** The e2-micro is free while running but GCP measures free tier usage by the hour. Once the script finishes and you've retrieved your file, go to Compute Engine → VM Instances → and **Stop** the instance so it stops counting against your free hours.
 
 ---
 
