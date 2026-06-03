@@ -1255,12 +1255,97 @@ python src/enrich_lastfm.py
 
 This script adds a `language` column (language of lyrics) by querying the MusicBrainz recording API. No API key required, but a User-Agent header with a real contact email is mandatory — MusicBrainz will block requests without it.
 
+Because this script runs at 1 req/sec and only targets tracks that already have a language-relevant Last.fm tag (typically 10–15% of the dataset, ~17–25 hours), it must be run on a persistent server rather than your local machine. **Use Oracle Cloud's free tier VM** so the script runs unattended without any session timeout.
+
+---
+
+#### Step 1 — Set Up Oracle Cloud Free VM
+
+1. Go to https://www.oracle.com/cloud/free/ and create a free account
+2. Once logged in, go to **Compute → Instances → Create Instance**
+3. Leave defaults (Oracle Linux, 1 OCPU, 1GB RAM — all free tier)
+4. Download the SSH key pair when prompted — save the `.key` file somewhere safe
+5. Once the instance is running, copy its **Public IP address**
+
+SSH into it from your local terminal:
+
+```bash
+ssh -i /path/to/your.key opc@YOUR_ORACLE_IP
+```
+
+On Windows use PowerShell or install PuTTY.
+
+---
+
+#### Step 2 — Set Up the VM Environment
+
+Once inside the VM, install Python dependencies:
+
+```bash
+sudo yum install python3 python3-pip -y
+pip3 install requests pandas tqdm
+```
+
+Create the working directory and upload your enriched CSV:
+
+```bash
+mkdir -p ~/music_recc/data/processed
+mkdir -p ~/music_recc/src
+```
+
+From your **local machine**, copy the file to the VM:
+
+```bash
+scp -i /path/to/your.key data/processed/tracks_enriched.csv opc@YOUR_ORACLE_IP:~/music_recc/data/processed/
+```
+
+Then copy the script:
+
+```bash
+scp -i /path/to/your.key src/enrich_musicbrainz.py opc@YOUR_ORACLE_IP:~/music_recc/src/
+```
+
+---
+
+#### Step 3 — Install `tmux`
+
+`tmux` keeps the script running after you disconnect from SSH. Without it, closing your terminal kills the script.
+
+```bash
+sudo yum install tmux -y
+```
+
+Basic `tmux` commands you need to know:
+
+| Command | What It Does |
+|---|---|
+| `tmux new -s enrichment` | Start a new named session |
+| `Ctrl+B` then `D` | Detach from session — script keeps running |
+| `tmux attach -t enrichment` | Reattach to check progress |
+| `tmux ls` | List running sessions |
+
+---
+
+#### Step 4 — The Script
+
+Create `~/music_recc/src/enrich_musicbrainz.py` on the VM:
+
 ```python
 import requests
 import pandas as pd
 import time
 import os
 from tqdm import tqdm
+
+# Language-relevant tags — only run MusicBrainz on tracks that have these
+LANGUAGE_TAGS = [
+    'chinese', 'mandopop', 'c-pop', 'cantopop', 'mandarin',
+    'japanese', 'j-pop', 'j-rock', 'jpop',
+    'korean', 'k-pop', 'kpop',
+    'thai', 't-pop',
+    'french', 'german', 'italian', 'portuguese',
+    'hindi', 'bollywood',
+]
 
 
 def get_musicbrainz_language(track_name, artist):
@@ -1270,7 +1355,7 @@ def get_musicbrainz_language(track_name, artist):
         "fmt": "json",
         "limit": 1
     }
-    # Replace with your real email — MusicBrainz requires this
+    # Replace with your real email — MusicBrainz requires this or it blocks you
     headers = {"User-Agent": "music-recommender/1.0 (your@email.com)"}
     try:
         r = requests.get(url, params=params, headers=headers, timeout=5)
@@ -1282,36 +1367,96 @@ def get_musicbrainz_language(track_name, artist):
     return ''
 
 
+def has_language_tag(tags_str):
+    if not isinstance(tags_str, str) or not tags_str:
+        return False
+    return any(tag in tags_str for tag in LANGUAGE_TAGS)
+
+
 if __name__ == "__main__":
-    # Read from the Last.fm enriched file, not the original clean file
-    df = pd.read_csv('data/processed/tracks_enriched.csv')
+    DATA_PATH = 'data/processed/tracks_enriched.csv'
+    CHECKPOINT_PATH = 'data/processed/tracks_enriched_checkpoint.csv'
+    LOG_PATH = 'enrichment_progress.log'
 
-    languages = []
+    df = pd.read_csv(DATA_PATH)
 
-    for i, row in tqdm(df.iterrows(), total=len(df)):
+    # Initialize language column if not already present
+    if 'language' not in df.columns:
+        df['language'] = ''
+
+    # Only process tracks with language-relevant Last.fm tags
+    needs_language = df[
+        df['lastfm_tags'].apply(has_language_tag) &
+        (df['language'].fillna('') == '')  # Skip already completed rows
+    ].index.tolist()
+
+    print(f"Total tracks: {len(df)}")
+    print(f"Tracks needing MusicBrainz lookup: {len(needs_language)}")
+    print(f"Estimated time: {len(needs_language) / 3600:.1f} hours")
+    print("Starting in 5 seconds — Ctrl+C to abort...")
+    time.sleep(5)
+
+    for count, i in enumerate(tqdm(needs_language)):
+        row = df.loc[i]
         lang = get_musicbrainz_language(row['track_name'], row['artists'])
-        languages.append(lang)
-        time.sleep(1.0)  # Hard limit — 1 req/sec. Do not go faster or you will be banned.
+        df.at[i, 'language'] = lang
+        time.sleep(1.0)  # Hard limit — do not remove
 
-        # Checkpoint every 5k rows
-        if i % 5000 == 0 and i > 0:
-            df_checkpoint = df.copy()
-            df_checkpoint['language'] = languages + [''] * (len(df) - len(languages))
-            df_checkpoint.to_csv('data/processed/tracks_enriched_checkpoint.csv', index=False)
-            print(f"Checkpoint saved at row {i}")
+        # Checkpoint and log every 5000 rows
+        if count % 5000 == 0 and count > 0:
+            df.to_csv(CHECKPOINT_PATH, index=False)
 
-    df['language'] = languages
-    df.to_csv('data/processed/tracks_enriched.csv', index=False)
-    print(f"Done. {len(df)} tracks enriched with language metadata.")
+            # Write to log file — also signals Oracle VM is active, not idle
+            with open(LOG_PATH, 'a') as f:
+                f.write(f"Row {i} | count {count} / {len(needs_language)} done\n")
+
+            print(f"Checkpoint saved at count {count}")
+
+    df.to_csv(DATA_PATH, index=False)
+    print(f"Done. Enriched {len(needs_language)} tracks with language metadata.")
 ```
 
-**Run it:**
+---
+
+#### Step 5 — Run It Inside tmux
+
+SSH into the VM, navigate to the project directory, and start a tmux session:
 
 ```bash
-python src/enrich_musicbrainz.py
+ssh -i /path/to/your.key opc@YOUR_ORACLE_IP
+cd ~/music_recc
+tmux new -s enrichment
+python3 src/enrich_musicbrainz.py
 ```
 
-> **Time estimate:** 600k tracks × 1s = ~167 hours (~7 days). Don't run the full dataset. Instead, filter to tracks with a `lastfm_tags` value that contains a language-relevant keyword first, or simply run it on your top 50k tracks by popularity. Language metadata is a bonus signal — Last.fm tags alone already cover most cultural queries.
+Once it's running and you've confirmed the first few rows are processing, detach:
+
+```
+Ctrl+B then D
+```
+
+You can now close your laptop. The script runs on Oracle's servers. Check back anytime:
+
+```bash
+ssh -i /path/to/your.key opc@YOUR_ORACLE_IP
+tmux attach -t enrichment
+```
+
+---
+
+#### Step 6 — Retrieve the Finished File
+
+Once the script completes, copy the enriched CSV back to your local machine:
+
+```bash
+scp -i /path/to/your.key opc@YOUR_ORACLE_IP:~/music_recc/data/processed/tracks_enriched.csv data/processed/tracks_enriched.csv
+```
+
+Then continue with **9.4 Enrichment Validation** locally as normal.
+
+---
+
+> **If the VM gets reclaimed mid-run:** Oracle rarely reclaims actively running VMs, but if it happens, the checkpoint file has your progress. Re-upload `tracks_enriched_checkpoint.csv` as `tracks_enriched.csv`, spin up a new VM, and re-run the script — it automatically skips rows where `language` is already populated.
 
 ---
 
