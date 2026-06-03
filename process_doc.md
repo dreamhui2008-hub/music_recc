@@ -1100,11 +1100,11 @@ Open http://localhost:8501 in your browser.
 
 ## 9. Phase 7 — Tag Enrichment & Generic Query Support
 
-**Goal:** Enrich the dataset with crowd-sourced tags and language metadata from Last.fm and MusicBrainz, rebuild the text descriptions and embeddings, and add a keyword boosting layer to the recommender — making cultural, linguistic, and subculture queries ("chinese", "vtuber", "lofi", "80s") actually work.
+**Goal:** Enrich the dataset with crowd-sourced tags from Last.fm, rebuild the text descriptions and embeddings, and add a keyword boosting layer and multilingual model to the recommender — making cultural, linguistic, and subculture queries ("chinese", "vtuber", "lofi", "80s") actually work.
 
 ### Why This Phase Exists
 
-The Kaggle dataset has no cultural or linguistic metadata. When you query "chinese", the sentence transformer has nothing to latch onto because none of the track descriptions mention language or cultural origin. Last.fm fills this gap with crowd-sourced tags like `mandopop`, `c-pop`, `vtuber`, `anime`, `lo-fi`, `80s`, and thousands more. MusicBrainz adds the language of lyrics. Together they make the recommender genuinely generic rather than mood-only.
+The Kaggle dataset has no cultural or linguistic metadata. When you query "chinese", the sentence transformer has nothing to latch onto because none of the track descriptions mention language or cultural origin. Last.fm fills this gap with crowd-sourced tags like `mandopop`, `c-pop`, `vtuber`, `anime`, `lo-fi`, `80s`, and thousands more. After enrichment, rebuilding the embeddings with these tags makes the recommender genuinely generic rather than mood-only.
 
 ### New Files Created in This Phase
 
@@ -1114,31 +1114,28 @@ music-recommender/
 ├── .gitignore                            # Must include .env
 ├── src/
 │   ├── enrich_lastfm.py                  # Batch Last.fm tag enrichment script
-│   ├── enrich_musicbrainz.py             # Batch MusicBrainz language enrichment script
 │   └── preprocess.py                     # Rebuilds text descriptions from enriched data
 ├── notebooks/
 │   └── 05_enrichment_validation.ipynb    # Inspect enrichment results before re-embedding
 ├── data/processed/
-│   ├── tracks_enriched.csv               # Output of enrich_lastfm.py + enrich_musicbrainz.py
+│   ├── tracks_enriched.csv               # Output of enrich_lastfm.py
 │   └── tracks_enriched_described.csv     # Output of preprocess.py, ready for Phase 3 re-run
 ```
 
 ### Execution Order
 
 ```
-enrich_lastfm.py         (run overnight — ~33 hrs for 600k tracks)
+enrich_lastfm.py                  (run overnight locally — ~33hrs for 600k tracks)
         ↓
-enrich_musicbrainz.py    (run overnight — 1 req/sec, prioritize by language)
+05_enrichment_validation.ipynb    (spot-check coverage before committing to re-embed)
         ↓
-05_enrichment_validation.ipynb   (spot-check coverage before committing to re-embed)
+preprocess.py                     (rebuild text descriptions from enriched data)
         ↓
-preprocess.py            (rebuild text descriptions from enriched data)
+Re-run 03_embeddings.ipynb        (new text_matrix.npy and hybrid_matrix.npy)
         ↓
-Re-run 03_embeddings.ipynb       (new text_matrix.npy and hybrid_matrix.npy)
+Re-run 04_index_build.ipynb       (new faiss.index)
         ↓
-Re-run 04_index_build.ipynb      (new faiss.index)
-        ↓
-Update recommender.py            (add keyword boosting layer + multilingual model swap)
+Update recommender.py             (add keyword boosting layer + multilingual model swap)
 ```
 
 ---
@@ -1181,7 +1178,14 @@ pip install python-dotenv
 
 ### 9.2 Script: `src/enrich_lastfm.py`
 
-This script iterates over every track in your cleaned dataset, calls the Last.fm `track.getTopTags` endpoint, and saves the top 10 crowd-sourced tags per track as a new column.
+This script iterates over every track in your cleaned dataset, calls the Last.fm `track.getTopTags` endpoint, and saves the top 10 crowd-sourced tags per track as a new column. Run it locally overnight — it takes ~33 hours for 600k tracks but the script is safe to stop and resume across multiple sessions.
+
+**Prepare your laptop for overnight runs:**
+
+1. **Settings → System → Power & Sleep** → set both to **Never**
+2. Plug into power before starting
+
+**The script:**
 
 ```python
 import requests
@@ -1217,28 +1221,44 @@ def get_lastfm_tags(track_name, artist, api_key):
 
 
 if __name__ == "__main__":
-    df = pd.read_csv('data/processed/tracks_clean.csv')
+    DATA_PATH = 'data/processed/tracks_clean.csv'
+    CHECKPOINT_PATH = 'data/processed/tracks_enriched_checkpoint.csv'
 
-    # Optional: start with top 100k by popularity to get results faster
-    # df = df.nlargest(100000, 'popularity').reset_index(drop=True)
+    df = pd.read_csv(DATA_PATH)
 
-    all_tags = []
+    # Initialize lastfm_tags column if resuming
+    if 'lastfm_tags' not in df.columns:
+        df['lastfm_tags'] = ''
 
-    for i, row in tqdm(df.iterrows(), total=len(df)):
-        tags = get_lastfm_tags(row['track_name'], row['artists'], API_KEY)
-        all_tags.append(' '.join(tags))
-        time.sleep(0.2)  # 5 req/sec — stay within Last.fm rate limit
+    # Only process rows not yet completed — safe to stop and resume
+    needs_tags = df[df['lastfm_tags'].fillna('') == ''].index.tolist()
 
-        # Checkpoint every 10k rows so a crash doesn't lose everything
-        if i % 10000 == 0 and i > 0:
-            df_checkpoint = df.copy()
-            df_checkpoint['lastfm_tags'] = all_tags + [''] * (len(df) - len(all_tags))
-            df_checkpoint.to_csv('data/processed/tracks_enriched_checkpoint.csv', index=False)
-            print(f"Checkpoint saved at row {i}")
+    print(f"Total tracks: {len(df)}")
+    print(f"Tracks remaining: {len(needs_tags)}")
+    print(f"Estimated time: {len(needs_tags) * 0.2 / 3600:.1f} hours")
+    print("Starting in 5 seconds — Ctrl+C to stop safely at any time...")
+    time.sleep(5)
 
-    df['lastfm_tags'] = all_tags
-    df.to_csv('data/processed/tracks_enriched.csv', index=False)
-    print(f"Done. {len(df)} tracks enriched with Last.fm tags.")
+    try:
+        for count, i in enumerate(tqdm(needs_tags)):
+            row = df.loc[i]
+            tags = get_lastfm_tags(row['track_name'], row['artists'], API_KEY)
+            df.at[i, 'lastfm_tags'] = ' '.join(tags)
+            time.sleep(0.2)  # 5 req/sec — stay within Last.fm rate limit
+
+            if count % 10000 == 0 and count > 0:
+                df.to_csv(CHECKPOINT_PATH, index=False)
+                print(f"Checkpoint saved at count {count}")
+
+    except KeyboardInterrupt:
+        print("\nStopped by user. Saving progress...")
+
+    finally:
+        # Always save on exit whether finished or interrupted
+        df.to_csv(DATA_PATH, index=False)
+        completed = (df['lastfm_tags'].fillna('') != '').sum()
+        print(f"Progress saved. {completed} / {len(df)} tracks have tags.")
+        print("Run the script again to continue from where you left off.")
 ```
 
 **Run it:**
@@ -1247,190 +1267,17 @@ if __name__ == "__main__":
 python src/enrich_lastfm.py
 ```
 
-> **Time estimate:** 600k tracks × 0.2s = ~33 hours. Run it before you sleep. If it crashes, rename `tracks_enriched_checkpoint.csv` to `tracks_enriched.csv` and rewrite the script to skip rows where `lastfm_tags` is already populated — add `if pd.notna(row.get('lastfm_tags')) and row['lastfm_tags']: continue` inside the loop.
+**Stopping and resuming across nights:**
+
+Press `Ctrl+C` to stop — the script catches this and saves before exiting. To resume the next night just run the same command again. It reads the CSV, finds rows where `lastfm_tags` is still empty, and picks up exactly where it left off.
+
+> **Optional shortcut:** Run only the top 100k tracks by popularity to get results faster. Uncomment this line before the `needs_tags` calculation: `df = df.nlargest(100000, 'popularity').reset_index(drop=True)`. You can enrich the rest later.
+
+> **If it crashes without a clean Ctrl+C:** Load from the last checkpoint: `copy data\processed\tracks_enriched_checkpoint.csv data\processed\tracks_clean.csv` then re-run.
 
 ---
 
-### 9.3 Script: `src/enrich_musicbrainz.py`
-
-This script adds a `language` column (language of lyrics) by querying the MusicBrainz recording API. No API key required, but a User-Agent header with a real contact email is mandatory — MusicBrainz will block requests without it.
-
-Because this script runs at 1 req/sec and only targets tracks that already have a language-relevant Last.fm tag (typically 10–15% of the dataset, ~17–25 hours), it is designed to run **locally in chunks over multiple nights**. The script automatically skips already-completed rows every time it starts, so you just stop it when you wake up and restart it the next night — no setup or cloud account required.
-
----
-
-#### Step 1 — Prepare Your Laptop for Overnight Runs
-
-Before starting, make sure Windows won't put your machine to sleep mid-run:
-
-1. **Settings → System → Power & Sleep**
-2. Set both "Screen" and "Sleep" to **Never**
-3. Plug into power — do not run on battery overnight
-
-That's all. No other configuration needed.
-
----
-
-#### Step 2 — The Script
-
-Create `src/enrich_musicbrainz.py`:
-
-```python
-import requests
-import pandas as pd
-import time
-import os
-from tqdm import tqdm
-
-# Language-relevant tags — only run MusicBrainz on tracks that have these
-LANGUAGE_TAGS = [
-    'chinese', 'mandopop', 'c-pop', 'cantopop', 'mandarin',
-    'japanese', 'j-pop', 'j-rock', 'jpop',
-    'korean', 'k-pop', 'kpop',
-    'thai', 't-pop',
-    'french', 'german', 'italian', 'portuguese',
-    'hindi', 'bollywood',
-]
-
-
-def get_musicbrainz_language(track_name, artist):
-    url = "https://musicbrainz.org/ws/2/recording"
-    params = {
-        "query": f'recording:"{track_name}" AND artist:"{artist}"',
-        "fmt": "json",
-        "limit": 1
-    }
-    # Replace with your real email — MusicBrainz requires this or it blocks you
-    headers = {"User-Agent": "music-recommender/1.0 (your@email.com)"}
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=5)
-        results = r.json().get('recordings', [])
-        if results:
-            return results[0].get('language', '')
-    except Exception:
-        return ''
-    return ''
-
-
-def has_language_tag(tags_str):
-    if not isinstance(tags_str, str) or not tags_str:
-        return False
-    return any(tag in tags_str for tag in LANGUAGE_TAGS)
-
-
-if __name__ == "__main__":
-    DATA_PATH = 'data/processed/tracks_enriched.csv'
-    CHECKPOINT_PATH = 'data/processed/tracks_enriched_checkpoint.csv'
-    LOG_PATH = 'enrichment_progress.log'
-
-    df = pd.read_csv(DATA_PATH)
-
-    # Initialize language column if not already present
-    if 'language' not in df.columns:
-        df['language'] = ''
-
-    # Only process tracks with language-relevant Last.fm tags
-    # Automatically skips rows already completed from previous runs
-    needs_language = df[
-        df['lastfm_tags'].apply(has_language_tag) &
-        (df['language'].fillna('') == '')
-    ].index.tolist()
-
-    total_needed = needs_language  # for progress reporting across runs
-    
-    print(f"Total tracks in dataset: {len(df)}")
-    print(f"Tracks remaining to process: {len(needs_language)}")
-    print(f"Estimated time this session: {len(needs_language) / 3600:.1f} hours")
-    
-    if len(needs_language) == 0:
-        print("All done — nothing left to process.")
-        exit()
-
-    print("Starting in 5 seconds — Ctrl+C to stop safely at any time...")
-    time.sleep(5)
-
-    try:
-        for count, i in enumerate(tqdm(needs_language)):
-            row = df.loc[i]
-            lang = get_musicbrainz_language(row['track_name'], row['artists'])
-            df.at[i, 'language'] = lang
-            time.sleep(1.0)  # Hard limit — do not remove
-
-            # Save checkpoint and log every 5000 rows
-            if count % 5000 == 0 and count > 0:
-                df.to_csv(CHECKPOINT_PATH, index=False)
-                with open(LOG_PATH, 'a') as f:
-                    f.write(f"count {count} / {len(needs_language)} remaining\n")
-                print(f"Checkpoint saved at count {count}")
-
-    except KeyboardInterrupt:
-        # Ctrl+C was pressed — save progress before exiting
-        print("\nStopped by user. Saving progress...")
-
-    finally:
-        # Always save on exit whether finished or interrupted
-        df.to_csv(DATA_PATH, index=False)
-        completed = len(df[df['language'].fillna('') != ''])
-        print(f"Progress saved. {completed} tracks have language data so far.")
-        print("Run the script again tomorrow to continue from where you left off.")
-```
-
----
-
-#### Step 3 — How to Run in Chunks
-
-**Starting a session (each night before bed):**
-
-```bash
-cd music_recc
-python src/enrich_musicbrainz.py
-```
-
-The script will print how many tracks are remaining and the estimated time for this session, then start running.
-
-**Stopping a session (when you wake up or need your laptop):**
-
-Press `Ctrl+C` in the terminal. The script catches this safely and saves all progress before exiting. Do not just close the terminal window — use `Ctrl+C` so the save happens cleanly.
-
-**Resuming the next night:**
-
-Just run the same command again:
-
-```bash
-python src/enrich_musicbrainz.py
-```
-
-It reads the CSV, finds all rows where `language` is still empty, and picks up exactly where it left off. The "Tracks remaining to process" number will be smaller each time.
-
-**Checking how far along you are without running the script:**
-
-```python
-import pandas as pd
-df = pd.read_csv('data/processed/tracks_enriched.csv')
-done = (df['language'].fillna('') != '').sum()
-total = df['lastfm_tags'].apply(lambda t: any(tag in str(t) for tag in ['chinese','japanese','korean','thai','french','german','hindi'])).sum()
-print(f"{done} / {total} done ({done/total*100:.1f}%)")
-```
-
-Run this in a quick Python shell anytime to check progress.
-
----
-
-#### Step 4 — Retrieve and Continue
-
-Once the script prints "Tracks remaining to process: 0" you are done. The finished file is already at `data/processed/tracks_enriched.csv` on your local machine — no retrieval step needed since you ran it locally.
-
-Continue with **9.4 Enrichment Validation** as normal.
-
----
-
-> **Typical schedule:** 8 hours per night at 1 req/sec = ~28,800 rows per night. At 10–15% of 600k tracks (~60–90k rows needing lookup), you're done in 2–3 nights.
-
-> **If the script crashes unexpectedly** (power cut, crash, not a clean Ctrl+C): the last checkpoint saved every 5000 rows is at `data/processed/tracks_enriched_checkpoint.csv`. Copy it over the main file and restart: `copy data\processed\tracks_enriched_checkpoint.csv data\processed\tracks_enriched.csv`
-
----
-
-### 9.4 Notebook: `notebooks/05_enrichment_validation.ipynb`
+### 9.3 Notebook: `notebooks/05_enrichment_validation.ipynb`
 
 Before committing to a full re-embed (which takes hours), validate that the enrichment actually worked. Open this notebook and work through the steps.
 
@@ -1439,7 +1286,7 @@ Before committing to a full re-embed (which takes hours), validate that the enri
 ```python
 import pandas as pd
 
-df = pd.read_csv('../data/processed/tracks_enriched.csv')
+df = pd.read_csv('../data/processed/tracks_clean.csv')
 print(df.shape)
 print(df.columns.tolist())
 ```
@@ -1451,7 +1298,7 @@ has_tags = df['lastfm_tags'].notna() & (df['lastfm_tags'] != '')
 print(f"Tracks with tags: {has_tags.sum()} / {len(df)} ({has_tags.mean()*100:.1f}%)")
 ```
 
-**What to look for:** You want at least 60–70% coverage. If it's much lower, either the enrichment script crashed early (load from checkpoint) or the track names in the dataset don't match Last.fm's database well (obscure tracks often have no tags — that's fine).
+**What to look for:** You want at least 60–70% coverage. If it's much lower, either the enrichment script crashed early (load from checkpoint) or many tracks in the dataset are obscure enough that Last.fm has no tag data for them — that's normal and fine.
 
 #### Step 3 — Inspect Tag Vocabulary
 
@@ -1468,11 +1315,9 @@ for tag, count in tag_counts.most_common(50):
     print(f"  {tag}: {count}")
 ```
 
-**What to look for:** You should see genre tags (`rock`, `pop`, `electronic`), mood tags (`chill`, `sad`, `happy`), cultural tags (`chinese`, `japanese`, `korean`), and subculture tags (`anime`, `vtuber`, `lofi`). If cultural tags are sparse, MusicBrainz language enrichment becomes more important.
+**What to look for:** You should see genre tags (`rock`, `pop`, `electronic`), mood tags (`chill`, `sad`, `happy`), cultural tags (`chinese`, `japanese`, `korean`), and subculture tags (`anime`, `vtuber`, `lofi`). If cultural tags are sparse, the keyword boosting layer in 9.5 becomes the primary fallback.
 
-#### Step 4 — Spot-Check Specific Queries
-
-Manually verify that the tags make sense for tracks you know:
+#### Step 4 — Spot-Check Specific Tracks
 
 ```python
 def show_tags(track_name):
@@ -1498,16 +1343,9 @@ for kw in cultural_keywords:
     print(f"  {kw}: {count} tracks")
 ```
 
-**What to look for:** Even a few hundred tracks per cultural keyword is enough to make queries work. If `vtuber` returns 0, it may not be in this dataset — that's a genuine data gap, and the keyword boosting layer in 9.6 will route those queries to `anime` and `j-pop` as a fallback.
+**What to look for:** Even a few hundred tracks per cultural keyword is enough to make queries work. If `vtuber` returns 0, it may be a genuine data gap in this dataset — the keyword boosting layer in 9.5 will route those queries to `anime` and `j-pop` as a fallback.
 
-#### Step 6 — Check Language Coverage (if you ran MusicBrainz)
-
-```python
-print(df['language'].value_counts().head(20))
-print(f"\nLanguage fill rate: {df['language'].notna().mean()*100:.1f}%")
-```
-
-### 9.4 Enrichment Validation Checklist
+### 9.3 Enrichment Validation Checklist
 
 - [ ] Tag coverage >60%
 - [ ] Top 50 tags include mood, genre, and cultural keywords
@@ -1517,7 +1355,7 @@ print(f"\nLanguage fill rate: {df['language'].notna().mean()*100:.1f}%")
 
 ---
 
-### 9.5 Script: `src/preprocess.py`
+### 9.4 Script: `src/preprocess.py`
 
 Once validation passes, run this script to rebuild text descriptions using the enriched data. This is what Phase 3 will re-embed.
 
@@ -1526,7 +1364,6 @@ import pandas as pd
 import numpy as np
 import pickle
 from sklearn.preprocessing import StandardScaler
-import os
 
 
 AUDIO_FEATURES = [
@@ -1547,10 +1384,6 @@ def build_track_description(row):
     if pd.notna(row.get('lastfm_tags')) and row['lastfm_tags']:
         parts.append(f"tags: {row['lastfm_tags']}")
 
-    # Add language if present
-    if pd.notna(row.get('language')) and row['language']:
-        parts.append(f"language: {row['language']}")
-
     parts += [
         f"valence {row['valence']:.2f}",
         f"energy {row['energy']:.2f}",
@@ -1562,13 +1395,13 @@ def build_track_description(row):
 
 
 if __name__ == "__main__":
-    df = pd.read_csv('data/processed/tracks_enriched.csv')
+    df = pd.read_csv('data/processed/tracks_clean.csv')
 
     # Re-apply log transforms
     df['instrumentalness_log'] = np.log1p(df['instrumentalness'])
     df['speechiness_log'] = np.log1p(df['speechiness'])
 
-    # Re-fit and save scaler (re-fitting because dataset may have changed size)
+    # Re-fit and save scaler
     scaler = StandardScaler()
     audio_matrix = scaler.fit_transform(df[AUDIO_FEATURES])
     np.save('embeddings/audio_matrix.npy', audio_matrix)
@@ -1591,13 +1424,13 @@ if __name__ == "__main__":
 python src/preprocess.py
 ```
 
-After this, go back and re-run `notebooks/03_embeddings.ipynb` and `notebooks/04_index_build.ipynb` — but point them at `tracks_enriched_described.csv` instead of `tracks_engineered.csv`.
+After this, go back and re-run `notebooks/03_embeddings.ipynb` and `notebooks/04_index_build.ipynb` — point them at `tracks_enriched_described.csv` instead of `tracks_engineered.csv`.
 
 ---
 
-### 9.6 Update `src/recommender.py` — Keyword Boosting Layer
+### 9.5 Update `src/recommender.py` — Keyword Boosting Layer
 
-Add the following to `recommender.py`. This is a hard safety net for cultural and subculture queries that embeddings might still miss even after enrichment.
+Add the following to `recommender.py`. This is a hard safety net for cultural and subculture queries that embeddings might still miss even after tag enrichment.
 
 **Add the boost dictionary near the top of the file, outside the class:**
 
@@ -1658,7 +1491,7 @@ if boosted_tags:
 
 ---
 
-### 9.7 Update `src/recommender.py` — Multilingual Embedding Model
+### 9.6 Update `src/recommender.py` — Multilingual Embedding Model
 
 Swap the sentence transformer model so queries in Chinese, Japanese, Korean, Thai etc. are understood natively rather than guessed:
 
@@ -1674,14 +1507,13 @@ model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
 ---
 
-### 9.8 Phase 7 Checklist
+### 9.7 Phase 7 Checklist
 
 - [ ] `.env` created with `LASTFM_API_KEY`
 - [ ] `.env` added to `.gitignore`
 - [ ] `python-dotenv` installed
-- [ ] `enrich_lastfm.py` run to completion (or checkpoint loaded)
-- [ ] `enrich_musicbrainz.py` run on priority subset (top 50k by popularity)
-- [ ] `tracks_enriched.csv` exists with `lastfm_tags` and `language` columns
+- [ ] `enrich_lastfm.py` run to completion across however many nights it takes
+- [ ] `tracks_clean.csv` now has a populated `lastfm_tags` column
 - [ ] `05_enrichment_validation.ipynb` run — tag coverage >60%, cultural keywords present
 - [ ] `preprocess.py` run — `tracks_enriched_described.csv` generated
 - [ ] `03_embeddings.ipynb` re-run pointing at `tracks_enriched_described.csv`
@@ -1693,16 +1525,15 @@ model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
 ---
 
-### 9.9 Summary of What Each Sub-Phase Fixes
+### 9.8 Summary of What Each Sub-Phase Fixes
 
 | Sub-Phase | File | Fixes |
 |---|---|---|
 | 9.2 Last.fm enrichment | `enrich_lastfm.py` | "chinese", "vtuber", "lofi", "anime", era queries |
-| 9.3 MusicBrainz enrichment | `enrich_musicbrainz.py` | Language-of-lyrics filtering |
-| 9.4 Validation | `05_enrichment_validation.ipynb` | Confirms enrichment worked before costly re-embed |
-| 9.5 Rebuild descriptions | `preprocess.py` | Tags and language flow into embedding space |
-| 9.6 Keyword boosting | `recommender.py` | Hard fallback for cultural queries embeddings still miss |
-| 9.7 Multilingual model | `recommender.py` | Non-English text queries understood natively |
+| 9.3 Validation | `05_enrichment_validation.ipynb` | Confirms enrichment worked before costly re-embed |
+| 9.4 Rebuild descriptions | `preprocess.py` | Tags flow into the embedding space |
+| 9.5 Keyword boosting | `recommender.py` | Hard fallback for cultural queries embeddings still miss |
+| 9.6 Multilingual model | `recommender.py` | Non-English text queries understood natively |
 
 ---
 
