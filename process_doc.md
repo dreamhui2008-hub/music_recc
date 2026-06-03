@@ -880,7 +880,7 @@ MMR is a reranking algorithm that balances relevance and diversity. Without it, 
         
         # Apply genre filter if specified
         if genre_filter:
-            genre_mask = self.df.iloc[candidates]['track_genre'].str.lower() == genre_filter.lower()
+            genre_mask = self.df.iloc[candidates]['track_genre'].str.lower().str.contains(genre_filter.lower(), na=False)
             candidates = candidates[genre_mask.values]
         
         # MMR reranking
@@ -903,7 +903,7 @@ Create `src/test_recommender.py`:
 ```python
 from recommender import MusicRecommender
 import os
-os.chdir('..')
+#os.chdir('..') Removed from pdxn since want to run directly inside /src
 
 rec = MusicRecommender()
 
@@ -925,12 +925,12 @@ print(results[['track_name', 'artists', 'valence', 'energy']].to_string())
 
 ### 7.2 Phase 5 Checklist
 
-- [ ] `MusicRecommender` class built with all five layers
-- [ ] Text query returns sensible results
-- [ ] Track-name query returns similar songs
-- [ ] Genre filter works
-- [ ] MMR reduces obvious duplicates in results
-- [ ] All three test cases pass manually
+- [x] `MusicRecommender` class built with all five layers
+- [x] Text query returns sensible results
+- [x] Track-name query returns similar songs
+- [x] Genre filter works
+- [x] MMR reduces obvious duplicates in results
+- [x] All three test cases pass manually
 
 ---
 
