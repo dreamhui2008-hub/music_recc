@@ -1088,98 +1088,242 @@ Open http://localhost:8501 in your browser.
 
 ### 8.4 Phase 6 Checklist
 
-- [ ] App loads without errors
-- [ ] Model loads once and is cached
-- [ ] Mood mode returns results
-- [ ] Song-name mode returns results
-- [ ] Genre filter works from UI
-- [ ] Diversity slider visibly changes result variety
-- [ ] Feedback buttons render (logic can be extended later)
+- [x] App loads without errors
+- [x] Model loads once and is cached
+- [x] Mood mode returns results
+- [x] Song-name mode returns results
+- [x] Genre filter works from UI
+- [x] Diversity slider visibly changes result variety
+- [x] Feedback buttons render (logic can be extended later)
 
 ---
 
-## 9. Phase 7 — Spotify API Integration (Stretch)
+## 9. Phase 7 — Tag Enrichment & Generic Query Support
 
-**Goal:** Extend the app to optionally query Spotify for tracks not in the dataset, and add Spotify preview links to results.
+### 9.1 Phase 7A — Last.fm Tag Enrichment
 
-### 9.1 Spotify Developer Setup
+Last.fm is fully free, no Premium, no business registration. Register at https://www.last.fm/api/account/create for an API key.
 
-1. Go to https://developer.spotify.com/dashboard
-2. Create a new app — name it anything
-3. Set redirect URI to `http://localhost:8080`
-4. Copy your `Client ID` and `Client Secret`
-
-Store them in a `.env` file (never commit this to Git):
-
-```bash
-SPOTIFY_CLIENT_ID=your_id_here
-SPOTIFY_CLIENT_SECRET=your_secret_here
-```
-
-Load them in Python:
+**Batch enrichment script** (`src/enrich_lastfm.py`):
 
 ```python
-import os
-from dotenv import load_dotenv
-load_dotenv()
+import requests
+import pandas as pd
+import time
+from tqdm import tqdm
 
-client_id = os.getenv('SPOTIFY_CLIENT_ID')
-client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
-```
+API_KEY = "your_lastfm_api_key"
 
-Install `python-dotenv`: `pip install python-dotenv`
-
-### 9.2 Basic Spotipy Setup
-
-```python
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-
-sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-    client_id=client_id,
-    client_secret=client_secret
-))
-```
-
-### 9.3 Fetch Audio Features for a Track Not in Your Dataset
-
-```python
-def get_spotify_track_features(track_name: str, artist: str = None) -> dict:
-    """Search Spotify for a track and return its audio features."""
-    query = f"track:{track_name}"
-    if artist:
-        query += f" artist:{artist}"
-    
-    results = sp.search(q=query, type='track', limit=1)
-    tracks = results['tracks']['items']
-    
-    if not tracks:
-        return None
-    
-    track = tracks[0]
-    track_id = track['id']
-    features = sp.audio_features([track_id])[0]
-    
-    return {
-        'track_name': track['name'],
-        'artists': ', '.join([a['name'] for a in track['artists']]),
-        'preview_url': track['preview_url'],
-        'spotify_url': track['external_urls']['spotify'],
-        'features': features
+def get_lastfm_tags(track_name, artist, api_key):
+    url = "https://ws.audioscrobbler.com/2.0/"
+    params = {
+        "method": "track.getTopTags",
+        "track": track_name,
+        "artist": artist,
+        "api_key": api_key,
+        "format": "json"
     }
+    try:
+        r = requests.get(url, params=params, timeout=5)
+        data = r.json()
+        tags = data.get('toptags', {}).get('tag', [])
+        return [t['name'].lower() for t in tags[:10]]
+    except Exception:
+        return []
+
+df = pd.read_csv('data/processed/tracks_clean.csv')
+
+# Run in batches with rate limiting (~5 req/sec is safe)
+all_tags = []
+for _, row in tqdm(df.iterrows(), total=len(df)):
+    tags = get_lastfm_tags(row['track_name'], row['artists'], API_KEY)
+    all_tags.append(' '.join(tags))
+    time.sleep(0.2)  # 5 req/sec
+
+df['lastfm_tags'] = all_tags
+df.to_csv('data/processed/tracks_enriched.csv', index=False)
 ```
 
-### 9.4 Add Preview Links to UI
+> **Warning:** 600k tracks at 5 req/sec = ~33 hours. Run overnight, or batch only the top 100k by popularity first: `df.nlargest(100000, 'popularity')`. You can always enrich the rest later.
 
-In the results section of `app.py`, add:
+**Checkpoint saving** — add this inside the loop so you don't lose progress if it crashes:
 
 ```python
-# After displaying track info
-if 'spotify_url' in row and pd.notna(row.get('spotify_url')):
-    st.markdown(f"[Open in Spotify]({row['spotify_url']})")
+if _ % 10000 == 0:
+    df['lastfm_tags'] = all_tags + [''] * (len(df) - len(all_tags))
+    df.to_csv('data/processed/tracks_enriched_checkpoint.csv', index=False)
 ```
 
-To populate `spotify_url` in your dataset, you can run a batch enrichment script overnight using the Spotify API (be mindful of rate limits: ~180 requests/minute).
+---
+
+### 9.2 Phase 7B — MusicBrainz Language Enrichment
+
+MusicBrainz gives you language of lyrics and country of origin. No API key required.
+
+```python
+import requests
+import time
+
+def get_musicbrainz_language(track_name, artist):
+    url = "https://musicbrainz.org/ws/2/recording"
+    params = {
+        "query": f'recording:"{track_name}" AND artist:"{artist}"',
+        "fmt": "json",
+        "limit": 1
+    }
+    headers = {"User-Agent": "music-recommender/1.0 (your@email.com)"}
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=5)
+        results = r.json().get('recordings', [])
+        if results:
+            return results[0].get('language', '')
+    except Exception:
+        return ''
+    return ''
+```
+
+> **MusicBrainz requires a User-Agent header** with a real contact email — otherwise requests get blocked. Rate limit is 1 req/sec, so this is slower than Last.fm. Prioritize it for languages you specifically want to support (Chinese, Japanese, Korean).
+
+---
+
+### 9.3 Phase 7C — Rebuild Text Descriptions
+
+Once enriched, update `build_track_description` in `src/preprocess.py`:
+
+```python
+def build_track_description(row):
+    parts = [
+        row['track_name'],
+        f"by {row['artists']}",
+        f"genre: {row['track_genre']}",
+    ]
+
+    # Add Last.fm tags if present
+    if pd.notna(row.get('lastfm_tags')) and row['lastfm_tags']:
+        parts.append(f"tags: {row['lastfm_tags']}")
+
+    # Add language if present
+    if pd.notna(row.get('language')) and row['language']:
+        parts.append(f"language: {row['language']}")
+
+    parts += [
+        f"valence {row['valence']:.2f}",
+        f"energy {row['energy']:.2f}",
+        f"danceability {row['danceability']:.2f}",
+        f"tempo {row['tempo']:.0f} BPM",
+        "major key" if row['mode'] == 1 else "minor key"
+    ]
+    return ' '.join(parts)
+```
+
+Then re-run Phase 3 (re-embed) and Phase 4 (rebuild FAISS index) in full.
+
+---
+
+### 9.4 Phase 7D — Keyword Boosting Layer
+
+Add this to `src/recommender.py` as a pre-filter before FAISS search. This is your safety net for cultural queries that embeddings still might miss:
+
+```python
+KEYWORD_BOOSTS = {
+    # Language/culture
+    "chinese":  ["mandopop", "c-pop", "chinese", "mandarin", "cantopop"],
+    "japanese": ["j-pop", "j-rock", "anime", "japanese", "jpop"],
+    "korean":   ["k-pop", "korean", "kpop"],
+    "thai":     ["thai pop", "thai", "t-pop"],
+    "spanish":  ["latin", "reggaeton", "spanish", "flamenco"],
+
+    # Subculture
+    "vtuber":   ["vtuber", "hololive", "virtual youtuber", "anime", "j-pop"],
+    "anime":    ["anime", "j-pop", "japanese", "vtuber"],
+    "kpop":     ["k-pop", "korean", "kpop"],
+
+    # Era
+    "80s":      ["80s", "synthpop", "new wave", "classic rock"],
+    "90s":      ["90s", "grunge", "britpop", "rnb"],
+    "2000s":    ["2000s", "pop punk", "indie rock"],
+
+    # Mood shortcuts
+    "lofi":     ["lo-fi", "lofi", "chillhop", "study"],
+    "sleep":    ["ambient", "sleep", "relaxing", "meditation"],
+    "workout":  ["workout", "gym", "high energy", "hype"],
+}
+
+def get_tag_boost(query: str) -> list:
+    """Return a list of tags to boost based on keywords in the query."""
+    query_lower = query.lower()
+    boosted_tags = []
+    for keyword, tags in KEYWORD_BOOSTS.items():
+        if keyword in query_lower:
+            boosted_tags.extend(tags)
+    return list(set(boosted_tags))
+```
+
+Then modify `recommend()` to use it:
+
+```python
+def recommend(self, query=None, track_name=None, ...):
+    ...
+    # After getting candidates from FAISS
+    boosted_tags = get_tag_boost(query or "")
+
+    if boosted_tags:
+        # Build a mask for tracks whose lastfm_tags contain any boosted tag
+        tag_mask = self.df['lastfm_tags'].fillna('').apply(
+            lambda t: any(tag in t for tag in boosted_tags)
+        )
+        boosted_candidates = self.df.index[tag_mask].tolist()
+
+        # Merge: boosted candidates first, then FAISS candidates, deduplicated
+        merged = list(dict.fromkeys(boosted_candidates[:200] + list(candidates)))
+        candidates = np.array(merged[:len(candidates)])
+    ...
+```
+
+---
+
+### 9.5 Phase 7E — Swap to Multilingual Embedding Model
+
+Replace the model in `src/recommender.py` and re-run Phase 3:
+
+```python
+# Old
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# New
+model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+```
+
+Same 384 dimensions, so your hybrid matrix shape doesn't change and Phase 4 only needs a re-run, not restructuring. This means queries in Chinese characters, Japanese, Korean, Thai etc. will be understood correctly by the embedding layer, not just routed through keyword boosting.
+
+---
+
+### 9.6 Phase 7 Checklist
+
+- [ ] Last.fm API key obtained
+- [ ] Enrichment script run (at minimum top 100k tracks by popularity)
+- [ ] Checkpoint saving verified — no progress lost on crash
+- [ ] MusicBrainz language enrichment run for priority languages
+- [ ] `tracks_enriched.csv` saved with `lastfm_tags` and `language` columns
+- [ ] `build_track_description` updated to include new fields
+- [ ] Phase 3 re-run with enriched descriptions (new `text_matrix.npy`)
+- [ ] Phase 4 re-run to rebuild FAISS index
+- [ ] Keyword boosting layer added to `recommender.py`
+- [ ] Multilingual model swapped in
+- [ ] "chinese" query now returns predominantly Chinese tracks
+- [ ] "vtuber" query now returns anime/vtuber-tagged tracks
+
+---
+
+### 9.7 Summary of What Each Sub-Phase Fixes
+
+| Sub-Phase | Fixes |
+|---|---|
+| 7A Last.fm tags | "chinese", "vtuber", "lofi", "anime" queries |
+| 7B MusicBrainz language | Language-of-lyrics filtering |
+| 7C Rebuild descriptions | Tags flow into the embedding space |
+| 7D Keyword boosting | Hard safety net for cultural queries |
+| 7E Multilingual model | Non-English text queries work properly |
 
 ---
 
