@@ -5,12 +5,45 @@ import pickle
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import normalize
 
+KEYWORD_BOOSTS = {
+    # Language / culture
+    "chinese":  ["mandopop", "c-pop", "chinese", "mandarin", "cantopop"],
+    "japanese": ["j-pop", "j-rock", "anime", "japanese", "jpop"],
+    "korean":   ["k-pop", "korean", "kpop"],
+    "thai":     ["thai pop", "thai", "t-pop"],
+    "spanish":  ["latin", "reggaeton", "spanish", "flamenco"],
+
+    # Subculture
+    "vtuber":   ["vtuber", "hololive", "virtual youtuber", "anime", "j-pop"],
+    "anime":    ["anime", "j-pop", "japanese", "vtuber"],
+    "kpop":     ["k-pop", "korean", "kpop"],
+
+    # Era
+    "80s":      ["80s", "synthpop", "new wave", "classic rock"],
+    "90s":      ["90s", "grunge", "britpop", "rnb"],
+    "2000s":    ["2000s", "pop punk", "indie rock"],
+
+    # Mood shortcuts
+    "lofi":     ["lo-fi", "lofi", "chillhop", "study"],
+    "sleep":    ["ambient", "sleep", "relaxing", "meditation"],
+    "workout":  ["workout", "gym", "high energy", "hype"],
+}
+
+def get_tag_boost(query: str) -> list:
+    """Return a list of tags to boost based on keywords found in the query."""
+    query_lower = query.lower()
+    boosted_tags = []
+    for keyword, tags in KEYWORD_BOOSTS.items():
+        if keyword in query_lower:
+            boosted_tags.extend(tags)
+    return list(set(boosted_tags))
+
 class MusicRecommender:
 
     # Layer 1 — Initialization
     def __init__(self):
         print("Loading data...")
-        self.df = pd.read_csv('data/processed/tracks_engineered.csv')
+        self.df = pd.read_csv('data/processed/tracks_enriched_described.csv')
 
         print("Loading index...")
         self.index = faiss.read_index('index/faiss.index')
@@ -20,7 +53,7 @@ class MusicRecommender:
         self.audio_matrix = np.load('embeddings/audio_matrix.npy')
 
         print("Loading model...")
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2') # 50+ languages, same 384 dimensions
 
         with open('embeddings/scaler.pkl', 'rb') as f:
             self.scaler = pickle.load(f)
@@ -135,6 +168,18 @@ class MusicRecommender:
         k_candidates = n * 5
         distances, indices = self.index.search(query_vec, k_candidates)
         candidates = indices[0]
+        boosted_tags = get_tag_boost(query or "")
+
+        # Apply boosted_tags:
+        if boosted_tags:
+            tag_mask = self.df['lastfm_tags'].fillna('').apply(
+                lambda t: any(tag in t for tag in boosted_tags)
+            )
+            boosted_candidates = self.df.index[tag_mask].tolist()
+
+            # Boosted candidates go first, then FAISS candidates, deduplicated
+            merged = list(dict.fromkeys(boosted_candidates[:200] + list(candidates)))
+            candidates = np.array(merged[:k_candidates])
 
         # Apply genre filter if specified
         if genre_filter:

@@ -114,19 +114,21 @@ Always activate this environment before working on the project.
 Create a `requirements.txt` with the following content:
 
 ```
-pandas==2.2.2
-numpy==1.26.4
-scikit-learn==1.4.2
-matplotlib==3.8.4
-plotly==5.21.0
-sentence-transformers==3.0.1
-faiss-cpu==1.8.0
-streamlit==1.35.0
-spotipy==2.23.0
+pandas>=2.3
+numpy>=1.26
+scikit-learn>=1.6
+matplotlib>=3.10
+plotly>=6.0
+sentence-transformers>=5.0
+streamlit>=1.45
+spotipy>=2.25
+tqdm>=4.67
+faiss-cpu==1.13.2 #faiss-gpu only available to CUDA-compatible GPU
 kaggle==1.6.12
 jupyter==1.0.0
-tqdm==4.66.4
 seaborn>=0.13.2
+torch>=2.7
+torchvision>=0.22
 ```
 
 Then install:
@@ -1286,7 +1288,7 @@ Before committing to a full re-embed (which takes hours), validate that the enri
 ```python
 import pandas as pd
 
-df = pd.read_csv('../data/processed/tracks_clean.csv')
+df = pd.read_csv('../data/processed/tracks_enriched.csv')
 print(df.shape)
 print(df.columns.tolist())
 ```
@@ -1348,10 +1350,10 @@ for kw in cultural_keywords:
 ### 9.3 Enrichment Validation Checklist
 
 - [ ] Tag coverage >60%
-- [ ] Top 50 tags include mood, genre, and cultural keywords
-- [ ] Spot-checks on known tracks return sensible tags
-- [ ] Cultural keywords return at least some results
-- [ ] You are satisfied before proceeding — re-embedding takes hours
+- [x] Top 50 tags include mood, genre, and cultural keywords
+- [x] Spot-checks on known tracks return sensible tags
+- [x] Cultural keywords return at least some results
+- [x] You are satisfied before proceeding — re-embedding takes hours
 
 ---
 
@@ -1395,7 +1397,7 @@ def build_track_description(row):
 
 
 if __name__ == "__main__":
-    df = pd.read_csv('data/processed/tracks_clean.csv')
+    df = pd.read_csv('data/processed/tracks_enriched.csv')
 
     # Re-apply log transforms
     df['instrumentalness_log'] = np.log1p(df['instrumentalness'])
@@ -1509,19 +1511,19 @@ model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
 ### 9.7 Phase 7 Checklist
 
-- [ ] `.env` created with `LASTFM_API_KEY`
-- [ ] `.env` added to `.gitignore`
-- [ ] `python-dotenv` installed
-- [ ] `enrich_lastfm.py` run to completion across however many nights it takes
-- [ ] `tracks_clean.csv` now has a populated `lastfm_tags` column
-- [ ] `05_enrichment_validation.ipynb` run — tag coverage >60%, cultural keywords present
-- [ ] `preprocess.py` run — `tracks_enriched_described.csv` generated
-- [ ] `03_embeddings.ipynb` re-run pointing at `tracks_enriched_described.csv`
-- [ ] `04_index_build.ipynb` re-run with new embeddings
-- [ ] Keyword boosting added to `recommender.py`
-- [ ] Multilingual model swapped in `recommender.py`
-- [ ] "chinese" query now returns predominantly Chinese-tagged tracks
-- [ ] "vtuber" query now returns anime/j-pop tracks rather than Spanish results
+- [x] `.env` created with `LASTFM_API_KEY`
+- [x] `.env` added to `.gitignore`
+- [x] `python-dotenv` installed
+- [x] `enrich_lastfm.py` run to completion across however many nights it takes
+- [x] `tracks_clean.csv` now has a populated `lastfm_tags` column
+- [x] `05_enrichment_validation.ipynb` run — tag coverage >60%, cultural keywords present
+- [x] `preprocess.py` run — `tracks_enriched_described.csv` generated
+- [x] `03_embeddings.ipynb` re-run pointing at `tracks_enriched_described.csv`
+- [x] `04_index_build.ipynb` re-run with new embeddings
+- [x] Keyword boosting added to `recommender.py`
+- [x] Multilingual model swapped in `recommender.py`
+- [] "chinese" query now returns predominantly Chinese-tagged tracks
+- [] "vtuber" query now returns anime/j-pop tracks rather than Spanish results
 
 ---
 
